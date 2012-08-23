@@ -218,7 +218,7 @@ is the name of the module, and the attribute name comes last.
 If a package name is specified instead it will automatically
 try to find a ``celery`` module in that package, and if the name
 is a module it will try to find a ``celery`` attribute in that module.
-This means that these are all equal:
+This means that these are all equal::
 
 .. code-block:: bash
 
