@@ -16,8 +16,113 @@ If you're looking for versions prior to 3.x you should see :ref:`history`.
 :state: DEVEL
 :branch: master
 
+- `celery inspect stats` now contains worker pid
 - `Task.apply_async` now supports timeout and soft_timeout arguments (Issue #802)
 - `App.control.Inspect.conf` can be used for inspecting worker configuration
+
+.. _version-3.0.6:
+
+3.0.6
+=====
+:release-date: 2012-09-17 11:00 P.M BST
+
+- Now depends on kombu 2.4.0
+
+- Now depends on billiard 2.7.3.12
+
+- Redis: Celery now tries to restore messages whenever there are no messages
+  in the queue.
+
+- Crontab schedules now properly respects :setting:`CELERY_TIMEZONE` setting.
+
+    It's important to note that crontab schedules uses UTC time by default
+    unless this setting is set.
+
+    Issue #904 and django-celery #150.
+
+- ``billiard.enable_forking`` is now only set by the processes pool.
+
+- The transport is now properly shown by :program:`celery report`
+  (Issue #913).
+
+- The `--app` argument now works if the last part is a module name
+  (Issue #921).
+
+- Fixed problem with unpickleable exceptions (billiard #12).
+
+- Adds ``task_name`` attribute to ``EagerResult`` which is always
+  :const:`None` (Issue #907).
+
+- Old Task class in :mod:`celery.task` no longer accepts magic kwargs by
+  default (Issue #918).
+
+    A regression long ago disabled magic kwargs for these, and since
+    no one has complained about it we don't have any incentive to fix it now.
+
+- The ``inspect reserved`` control command did not work properly.
+
+- Should now play better with static analyzation tools by explicitly
+  specifying dynamically created attributes in the :mod:`celery` and
+  :mod:`celery.task` modules.
+
+- Terminating a task now results in
+  :exc:`~celery.exceptions.RevokedTaskError` instead of a ``WorkerLostError``.
+
+- ``AsyncResult.revoke`` now accepts ``terminate`` and ``signal`` arguments.
+
+- The ``task-revoked`` event now includes new fields: ``terminated``,
+  ``signum``, and ``expired``.
+
+- The argument to :class:`~celery.exceptions.TaskRevokedError` is now one
+  of the reasons ``revoked``, ``expired`` or ``terminated``.
+
+- Old Task class does no longer use classmethods for push_request and
+  pop_request  (Issue #912).
+
+- ``GroupResult`` now supports the ``children`` attribute (Issue #916).
+
+- ``AsyncResult.collect`` now respects the ``intermediate`` argument
+  (Issue #917).
+
+- Fixes example task in documentation (Issue #902).
+
+- Eventlet fixed so that the environment is patched as soon as possible.
+
+- eventlet: Now warns if celery related modules that depends on threads
+  are imported before eventlet is patched.
+
+- Improved event and camera examples in the monitoring guide.
+
+- Disables celery command setuptools entrypoints if the command can't be
+  loaded.
+
+- Fixed broken ``dump_request`` example in the tasks guide.
+
+.. _version-3.0.5:
+
+3.0.5
+=====
+:release-date: 2012-08-01 04:00 P.M BST
+
+- Now depends on kombu 2.3.1 + billiard 2.7.3.11
+
+- Fixed a bug with the -B option (``cannot pickle thread.lock objects``)
+  (Issue #894 + Issue #892, + django-celery #154).
+
+- The :control:`restart_pool` control command now requires the
+  :setting:`CELERYD_POOL_RESTARTS` setting to be enabled
+
+    This change was necessary as the multiprocessing event that the restart
+    command depends on is responsible for creating many semaphores/file
+    descriptors, resulting in problems in some environments.
+
+- ``chain.apply`` now passes args to the first task (Issue #889).
+
+- Documented previously secret options to the Django-Celery monitor
+  in the monitoring userguide (Issue #396).
+
+- Old changelog are now organized in separate documents for each series,
+  see :ref:`history`.
 
 .. _version-3.0.4:
 

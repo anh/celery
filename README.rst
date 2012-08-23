@@ -97,7 +97,7 @@ Celery is...
 
         celery = Celery('hello', broker='amqp://guest@localhost//')
 
-        @celery.task()
+        @celery.task
         def hello():
             return 'hello world'
 
@@ -249,7 +249,7 @@ The following bundles are available:
 .. _`django-celery-with-redis`:
     http://pypi.python.org/pypi/django-celery-with-redis/
 .. _`django-celery-with-mongodb`:
-    http://pypi.python.org/pypi/django-celery-with-mongodb/
+    http://pypi.python.org/pypi/django-celery-with-mongdb/
 
 .. _celery-installing-from-source:
 

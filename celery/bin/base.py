@@ -60,17 +60,18 @@ from __future__ import absolute_import, print_function
 
 import os
 import re
+import socket
 import sys
 import warnings
 
 from collections import defaultdict
-from future_builtins import zip
+from itertools import izip
 from optparse import OptionParser, IndentedHelpFormatter, make_option as Option
 from types import ModuleType
 
 import celery
 from celery.exceptions import CDeprecationWarning, CPendingDeprecationWarning
-from celery.platforms import EX_FAILURE, EX_USAGE
+from celery.platforms import EX_FAILURE, EX_USAGE, maybe_patch_concurrency
 from celery.utils import text
 from celery.utils.imports import symbol_by_name, import_from_cwd
 
@@ -86,6 +87,7 @@ Try --help?
 
 find_long_opt = re.compile(r'.+?(--.+?)(?:\s|,|$)')
 find_rst_ref = re.compile(r':\w+:`(.+?)`')
+find_sformat = re.compile(r'%(\w)')
 
 
 class HelpFormatter(IndentedHelpFormatter):
@@ -166,9 +168,7 @@ class Command(object):
         if argv is None:
             argv = list(sys.argv)
         # Should we load any special concurrency environment?
-        pool_option = self.with_pool_option(argv)
-        if pool_option:
-            self.maybe_patch_concurrency(argv, *pool_option)
+        self.maybe_patch_concurrency(argv)
         self.on_concurrency_setup()
 
         # Dump version and exit if '--version' arg set.
@@ -177,26 +177,15 @@ class Command(object):
         prog_name = os.path.basename(argv[0])
         return self.handle_argv(prog_name, argv[1:])
 
-    def _find_option_with_arg(self, argv, short_opts=None, long_opts=None):
-        for i, arg in enumerate(argv):
-            if arg.startswith('-'):
-                if long_opts and arg.startswith('--'):
-                    name, _, val = arg.partition('=')
-                    if name in long_opts:
-                        return val
-                if short_opts and arg in short_opts:
-                    return argv[i + 1]
-        raise KeyError('|'.join(short_opts or [] + long_opts or []))
+    def run_from_argv(self, prog_name, argv=None):
+        return self.handle_argv(prog_name, sys.argv if argv is None else argv)
 
-    def maybe_patch_concurrency(self, argv, short_opts=None, long_opts=None):
-        try:
-            pool = self._find_option_with_arg(argv, short_opts, long_opts)
-        except KeyError:
-            pass
-        else:
-            from celery import concurrency
-            # set up eventlet/gevent environments ASAP.
-            concurrency.get_implementation(pool)
+    def maybe_patch_concurrency(self, argv=None):
+        argv = argv or sys.argv
+        pool_option = self.with_pool_option(argv)
+        if pool_option:
+            maybe_patch_concurrency(argv, *pool_option)
+            short_opts, long_opts = pool_option
 
     def on_concurrency_setup(self):
         pass
@@ -302,14 +291,18 @@ class Command(object):
             os.environ['CELERY_CONFIG_MODULE'] = config_module
         if app:
             self.app = self.find_app(app)
-        else:
+        elif self.app is None:
             self.app = self.get_app(loader=loader)
         if self.enable_config_from_cmdline:
             argv = self.process_cmdline_config(argv)
         return argv
 
     def find_app(self, app):
-        sym = self.symbol_by_name(app)
+        try:
+            sym = self.symbol_by_name(app)
+        except AttributeError:
+            # last part was not an attribute, but a module
+            sym = import_from_cwd(app)
         if isinstance(sym, ModuleType):
             if getattr(sym, '__path__', None):
                 return self.find_app('{0}.celery:'.format(
@@ -335,7 +328,7 @@ class Command(object):
         opts = {}
         for opt in self.preload_options:
             for t in (opt._long_opts, opt._short_opts):
-                opts.update(dict(zip(t, [opt.dest] * len(t))))
+                opts.update(dict(izip(t, [opt.dest] * len(t))))
         index = 0
         length = len(args)
         while index < length:
@@ -375,6 +368,13 @@ class Command(object):
               has_pool_option = (['-P'], ['--pool'])
         """
         pass
+
+    def simple_format(self, s, match=find_sformat, expand=r'\1', **keys):
+        if s:
+            host = socket.gethostname()
+            name, _, domain = host.partition('.')
+            keys = dict({'%': '%', 'h': host, 'n': name, 'd': domain}, **keys)
+            return match.sub(lambda m: keys[m.expand(expand)], s)
 
     def _get_default_app(self, *args, **kwargs):
         from celery.app import default_app

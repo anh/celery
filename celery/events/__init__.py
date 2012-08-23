@@ -18,7 +18,7 @@ from collections import deque
 from contextlib import contextmanager
 from copy import copy
 
-from kombu import eventloop, Exchange, Queue, Consumer, Producer
+from kombu import Exchange, Queue, Producer
 from kombu.mixins import ConsumerMixin
 from kombu.utils import cached_property
 
@@ -165,14 +165,12 @@ class EventReceiver(ConsumerMixin):
     handler.
 
     """
-    handlers = {}
 
     def __init__(self, connection, handlers=None, routing_key='#',
             node_id=None, app=None, queue_prefix='celeryev'):
         self.app = app_or_default(app)
         self.connection = connection
-        if handlers is not None:
-            self.handlers = handlers
+        self.handlers = {} if handlers is None else handlers
         self.routing_key = routing_key
         self.node_id = node_id or uuid()
         self.queue_prefix = queue_prefix

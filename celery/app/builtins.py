@@ -10,8 +10,7 @@
 from __future__ import absolute_import
 
 from collections import deque
-from future_builtins import map, zip
-from itertools import starmap
+from itertools import imap, izip, starmap
 
 from celery._state import get_current_worker_task
 from celery.utils import uuid
@@ -71,7 +70,7 @@ def add_unlock_chord_task(app):
     from celery import result as _res
 
     @app.task(name='celery.chord_unlock', max_retries=None,
-              default_retry_delay=1)
+              default_retry_delay=1, ignore_result=True)
     def unlock_chord(group_id, callback, interval=None, propagate=False,
             max_retries=None, result=None, Result=_res.AsyncResult):
         if interval is None:
@@ -92,7 +91,7 @@ def add_map_task(app):
     @app.task(name='celery.map')
     def xmap(task, it):
         task = subtask(task).type
-        return list(map(task, it))
+        return list(imap(task, it))
     return xmap
 
 
@@ -161,7 +160,7 @@ def add_group_task(app):
                 return task, AsyncResult(tid)
 
             try:
-                tasks, res = list(zip(*[prepare_member(task)
+                tasks, res = list(izip(*[prepare_member(task)
                                                 for task in tasks]))
             except ValueError:  # tasks empty
                 tasks, res = [], []
@@ -245,13 +244,12 @@ def add_chain_task(app):
             tasks[0].apply_async()
             return result
 
-        def apply(self, args=(), kwargs={}, **options):
-            tasks = [maybe_subtask(task).clone() for task in kwargs['tasks']]
-            res = prev = None
-            for task in tasks:
-                res = task.apply((prev.get(), ) if prev else ())
-                res.parent, prev = prev, res
-            return res
+        def apply(self, args=(), kwargs={}, subtask=maybe_subtask, **options):
+            last, fargs = None, args  # fargs passed to first task only
+            for task in kwargs['tasks']:
+                res = subtask(task).clone(fargs).apply(last and (last.get(), ))
+                res.parent, last, fargs = last, res, None
+            return last
     return Chain
 
 

@@ -8,10 +8,10 @@
 """
 from __future__ import absolute_import
 
-from future_builtins import map
-from datetime import datetime
+import os
 
 from kombu.utils.encoding import safe_repr
+from itertools import imap
 
 from celery.platforms import signals as _signals
 from celery.utils import timeutils
@@ -160,13 +160,12 @@ def dump_schedule(panel, safe=False, **kwargs):
 
 @Panel.register
 def dump_reserved(panel, safe=False, **kwargs):
-    ready_queue = panel.consumer.ready_queue
-    reserved = ready_queue.items
+    reserved = state.reserved_requests
     if not reserved:
         logger.debug('--Empty queue--')
         return []
     logger.debug('* Dump of currently reserved tasks:\n%s',
-                 '\n'.join(map(safe_repr, reserved)))
+                 '\n'.join(imap(safe_repr, reserved)))
     return [request.info(safe=safe)
             for request in reserved]
 
@@ -185,7 +184,8 @@ def stats(panel, **kwargs):
     return {'total': state.total_count,
             'consumer': panel.consumer.info,
             'pool': panel.consumer.pool.info,
-            'autoscaler': asinfo}
+            'autoscaler': asinfo,
+            'pid': os.getpid()}
 
 
 @Panel.register
@@ -203,7 +203,7 @@ def dump_tasks(panel, taskinfoitems=None, **kwargs):
                         for field in taskinfoitems
                             if getattr(task, field, None) is not None)
         if fields:
-            info = map('='.join, fields.iteritems())
+            info = imap('='.join, fields.iteritems())
             return '{0} [{1}]'.format(task.name, ' '.join(info))
         return task.name
 

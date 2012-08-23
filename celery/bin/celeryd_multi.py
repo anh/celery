@@ -6,7 +6,7 @@
 Examples
 ========
 
-::
+.. code-block:: bash
 
     # Single worker with explicit name and events enabled.
     $ celeryd-multi start Leslie -E
@@ -97,7 +97,7 @@ import socket
 import sys
 
 from collections import defaultdict
-from future_builtins import map
+from itertools import imap
 from subprocess import Popen
 from time import sleep
 
@@ -153,7 +153,8 @@ class MultiTool(object):
         self.commands = {'start': self.start,
                          'show': self.show,
                          'stop': self.stop,
-                         'stop_verify': self.stop_verify,
+                         'stopwait': self.stopwait,
+                         'stop_verify': self.stopwait,
                          'restart': self.restart,
                          'kill': self.kill,
                          'names': self.names,
@@ -225,7 +226,7 @@ class MultiTool(object):
     def with_detacher_default_options(self, p):
         p.options.setdefault('--pidfile', 'celeryd@%n.pid')
         p.options.setdefault('--logfile', 'celeryd@%n.log')
-        p.options.setdefault('--cmd', '-m celery.bin.celeryd_detach')
+        p.options.setdefault('--cmd', '-m celery worker --detach')
 
     def signal_node(self, nodename, pid, sig):
         try:
@@ -345,11 +346,12 @@ class MultiTool(object):
         self._stop_nodes(p, cmd, retry=2, callback=on_node_shutdown)
         self.retval = int(any(retvals))
 
-    def stop_verify(self, argv, cmd):
+    def stopwait(self, argv, cmd):
         self.splash()
         p = NamespacedOptionParser(argv)
         self.with_detacher_default_options(p)
         return self._stop_nodes(p, cmd, retry=2)
+    stop_verify = stopwait  # compat
 
     def expand(self, argv, cmd=None):
         template = argv[0]
@@ -425,7 +427,7 @@ def multi_args(p, cmd='celeryd', append='', prefix='', suffix=''):
         except ValueError:
             pass
         else:
-            names = list(map(str, range(1, noderange + 1)))
+            names = list(imap(str, range(1, noderange + 1)))
             prefix = 'celery'
     cmd = options.pop('--cmd', cmd)
     append = options.pop('--append', append)
@@ -526,19 +528,19 @@ def parse_ns_range(ns, ranges=False):
     for space in ',' in ns and ns.split(',') or [ns]:
         if ranges and '-' in space:
             start, stop = space.split('-')
-            x = list(map(str, range(int(start), int(stop) + 1)))
+            x = list(imap(str, range(int(start), int(stop) + 1)))
             ret.extend(x)
         else:
             ret.append(space)
     return ret
 
 
-def abbreviations(map):
+def abbreviations(mapping):
 
     def expand(S):
         ret = S
         if S is not None:
-            for short, long in map.items():
+            for short, long in mapping.items():
                 ret = ret.replace(short, long)
         return ret
 

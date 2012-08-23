@@ -9,12 +9,12 @@ The :program:`celery` umbrella command.
 from __future__ import absolute_import, print_function
 
 import anyjson
+import heapq
 import sys
 import warnings
 
-from billiard import freeze_support
-from future_builtins import map
 from importlib import import_module
+from itertools import imap
 from pprint import pformat
 
 from celery.platforms import EX_OK, EX_FAILURE, EX_UNAVAILABLE, EX_USAGE
@@ -83,7 +83,6 @@ def load_extension_commands(namespace='celery.commands'):
         return
 
     for ep in iter_entry_points(namespace):
-        _get_extension_classes().append(ep.name)
         sym = ':'.join([ep.module_name, ep.attrs[0]])
         try:
             cls = symbol_by_name(sym)
@@ -91,6 +90,7 @@ def load_extension_commands(namespace='celery.commands'):
             warnings.warn(
                 'Cannot load extension {0!r}: {1!r}'.format(sym, exc))
         else:
+            heapq.heappush(_get_extension_classes(), ep.name)
             command(cls, name=ep.name)
 
 
@@ -169,7 +169,7 @@ class Command(BaseCommand):
 
     def say_remote_command_reply(self, replies):
         c = self.colored
-        node = replies.keys()[0]
+        node = iter(replies).next()  # <-- take first.
         reply = replies[node]
         status, preply = self.prettify(reply)
         self.say_chat('->', c.cyan(node, ': ') + status,
@@ -247,6 +247,10 @@ class worker(Delegate):
         celery worker --autoscale=10,0
     """
     Command = 'celery.bin.celeryd:WorkerCommand'
+
+    def run_from_argv(self, prog_name, argv):
+        self.target.maybe_detach(argv)
+        super(worker, self).run_from_argv(prog_name, argv)
 
 
 @command
@@ -333,7 +337,7 @@ class list_(Command):
 
     def run(self, what=None, *_, **kw):
         topics = {'bindings': self.list_bindings}
-        available = ', '.join(topics.keys())
+        available = ', '.join(topics)
         if not what:
             raise Error('You must specify one of {0}'.format(available))
         if what not in topics:
@@ -411,7 +415,7 @@ class purge(Command):
     fmt_empty = 'No messages purged from {qnum} {queues}'
 
     def run(self, *args, **kwargs):
-        queues = len(self.app.amqp.queues.keys())
+        queues = len(self.app.amqp.queues)
         messages = self.app.control.purge()
         fmt = self.fmt_purged if messages else self.fmt_empty
         self.out(fmt.format(
@@ -519,7 +523,7 @@ class _RemoteControl(Command):
         destination = kwargs.get('destination')
         timeout = kwargs.get('timeout') or self.choices[method][0]
         if destination and isinstance(destination, basestring):
-            destination = list(map(str.strip, destination.split(',')))
+            destination = list(imap(str.strip, destination.split(',')))
 
         try:
             handler = getattr(self, method)
@@ -717,7 +721,9 @@ class shell(Command):  # pragma: no cover
           xmap, xstarmap subtask, Task
         - all registered tasks.
 
-    Example Session::
+    Example Session:
+
+    .. code-block:: bash
 
         $ celery shell
 
@@ -929,15 +935,18 @@ def determine_exit_status(ret):
     return EX_OK if ret else EX_FAILURE
 
 
-def main():
+def main(argv=None):
     # Fix for setuptools generated scripts, so that it will
     # work with multiprocessing fork emulation.
     # (see multiprocessing.forking.get_preparation_data())
     try:
         if __name__ != '__main__':  # pragma: no cover
             sys.modules['__main__'] = sys.modules[__name__]
+        cmd = CeleryCommand()
+        cmd.maybe_patch_concurrency()
+        from billiard import freeze_support
         freeze_support()
-        CeleryCommand().execute_from_commandline()
+        cmd.execute_from_commandline(argv)
     except KeyboardInterrupt:
         pass
 

@@ -8,12 +8,12 @@
 """
 from __future__ import absolute_import
 
-from kombu.utils import cached_property
+from itertools import izip
 
 from datetime import datetime, timedelta
 from dateutil import tz
 from dateutil.parser import parse as parse_iso8601
-from future_builtins import zip
+from kombu.utils import cached_property
 
 from celery.exceptions import ImproperlyConfigured
 
@@ -26,7 +26,7 @@ except ImportError:     # pragma: no cover
 
 
 DAYNAMES = 'sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'
-WEEKDAYS = dict(zip(DAYNAMES, range(7)))
+WEEKDAYS = dict(izip(DAYNAMES, range(7)))
 
 RATE_MODIFIER_MAP = {'s': lambda n: n,
                      'm': lambda n: n / 60.0,
@@ -50,8 +50,8 @@ class _Zone(object):
 
     def to_local(self, dt, local=None, orig=None):
         if is_naive(dt):
-            dt = set_tz(dt, orig or self.utc)
-        return dt.astimezone(self.tz_or_local(local))
+            dt = make_aware(dt, orig or self.utc)
+        return localize(dt, self.tz_or_local(local))
 
     def get_timezone(self, zone):
         if isinstance(zone, basestring):
@@ -140,7 +140,6 @@ def remaining(start, ends_in, now=None, relative=False):
 
     """
     now = now or datetime.utcnow()
-
     end_date = start + ends_in
     if relative:
         end_date = delta_resolution(end_date, ends_in)
@@ -202,7 +201,7 @@ def is_naive(dt):
     return dt.tzinfo is None or dt.tzinfo.utcoffset(dt) is None
 
 
-def set_tz(dt, tz):
+def make_aware(dt, tz):
     """Sets the timezone for a datetime object."""
     try:
         localize = tz.localize
@@ -213,6 +212,23 @@ def set_tz(dt, tz):
         return localize(dt, is_dst=None)
 
 
+def localize(dt, tz):
+    """Convert aware datetime to another timezone."""
+    dt = dt.astimezone(tz)
+    try:
+        normalize = tz.normalize
+    except AttributeError:
+        return dt
+    else:
+        return normalize(dt)  # pytz
+
+
 def to_utc(dt):
     """Converts naive datetime to UTC"""
-    return set_tz(dt, timezone.utc)
+    return make_aware(dt, timezone.utc)
+
+
+def maybe_make_aware(dt, tz=None):
+    if is_naive(dt):
+        return to_utc(dt)
+    return localize(dt, timezone.utc if tz is None else tz)

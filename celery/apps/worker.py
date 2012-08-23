@@ -14,32 +14,25 @@ from __future__ import absolute_import, print_function
 
 import logging
 import os
-import socket
 import sys
 import warnings
 
 from functools import partial
 
-from billiard import cpu_count, current_process
+from billiard import current_process
 
 from celery import VERSION_BANNER, platforms, signals
-from celery.app import app_or_default
-from celery.app.abstract import configurated, from_config
-from celery.exceptions import ImproperlyConfigured, SystemTerminate
+from celery.exceptions import SystemTerminate
 from celery.loaders.app import AppLoader
-from celery.utils import cry, isatty, worker_direct
+from celery.utils import cry, isatty
 from celery.utils.imports import qualname
-from celery.utils.log import get_logger, mlevel, set_in_sighandler
+from celery.utils.log import get_logger, in_sighandler, set_in_sighandler
 from celery.utils.text import pluralize
 from celery.worker import WorkController
 
-try:
-    from greenlet import GreenletExit
-    IGNORE_ERRORS = (GreenletExit, )
-except ImportError:  # pragma: no cover
-    IGNORE_ERRORS = ()
-
 logger = get_logger(__name__)
+is_jython = sys.platform.startswith('java')
+is_pypy = hasattr(sys, 'pypy_version_info')
 
 
 def active_thread_count():
@@ -84,69 +77,27 @@ EXTRA_INFO_FMT = """
 {tasks}
 """
 
-UNKNOWN_QUEUE = """\
-Trying to select queue subset of {0!r}, but queue {1} is not
-defined in the CELERY_QUEUES setting.
 
-If you want to automatically declare unknown queues you can
-enable the CELERY_CREATE_MISSING_QUEUES setting.
-"""
+class Worker(WorkController):
 
-
-class Worker(configurated):
-    WorkController = WorkController
-
-    app = None
-    inherit_confopts = (WorkController, )
-    loglevel = from_config('log_level')
-    redirect_stdouts = from_config()
-    redirect_stdouts_level = from_config()
-
-    def __init__(self, hostname=None, purge=False, beat=False,
-            queues=None, include=None, app=None, pidfile=None,
-            autoscale=None, autoreload=False, no_execv=False, **kwargs):
-        self.app = app = app_or_default(app or self.app)
-        self.hostname = hostname or socket.gethostname()
-
+    def on_before_init(self, purge=False, redirect_stdouts=None,
+            redirect_stdouts_level=None, **kwargs):
         # this signal can be used to set up configuration for
         # workers by name.
+        conf = self.app.conf
         signals.celeryd_init.send(sender=self.hostname, instance=self,
-                                  conf=self.app.conf)
-
-        self.setup_defaults(kwargs, namespace='celeryd')
-        if not self.concurrency:
-            try:
-                self.concurrency = cpu_count()
-            except NotImplementedError:
-                self.concurrency = 2
+                                  conf=conf)
         self.purge = purge
-        self.beat = beat
-        self.use_queues = [] if queues is None else queues
-        self.queues = None
-        self.include = include
-        self.pidfile = pidfile
-        self.autoscale = None
-        self.autoreload = autoreload
-        self.no_execv = no_execv
-        if autoscale:
-            max_c, _, min_c = autoscale.partition(',')
-            self.autoscale = [int(max_c), min_c and int(min_c) or 0]
         self._isatty = isatty(sys.stdout)
+        self.colored = self.app.log.colored(self.logfile)
+        if redirect_stdouts is None:
+            redirect_stdouts = conf.CELERY_REDIRECT_STDOUTS,
+        if redirect_stdouts_level is None:
+            redirect_stdouts_level = conf.CELERY_REDIRECT_STDOUTS_LEVEL
+        self.redirect_stdouts = redirect_stdouts
+        self.redirect_stdouts_level = redirect_stdouts_level
 
-        self.colored = app.log.colored(self.logfile)
-
-        if isinstance(self.use_queues, basestring):
-            self.use_queues = self.use_queues.split(',')
-        if self.include:
-            if isinstance(self.include, basestring):
-                self.include = self.include.split(',')
-            app.conf.CELERY_INCLUDE = (
-                tuple(app.conf.CELERY_INCLUDE) + tuple(self.include))
-        self.loglevel = mlevel(self.loglevel)
-
-    def run(self):
-        self.init_queues()
-        self.app.loader.init_worker()
+    def on_start(self):
         # this signal can be used to e.g. change queues after
         # the -Q option has been applied.
         signals.celeryd_after_setup.send(sender=self.hostname, instance=self,
@@ -164,25 +115,12 @@ class Worker(configurated):
         print(str(self.colored.cyan(' \n', self.startup_info())) +
               str(self.colored.reset(self.extra_info() or '')))
         self.set_process_status('-active-')
-
         self.redirect_stdouts_to_logger()
-        try:
-            self.run_worker()
-        except IGNORE_ERRORS:
-            pass
+        self.install_platform_tweaks(self)
 
     def on_consumer_ready(self, consumer):
         signals.worker_ready.send(sender=consumer)
         print('celery@{0.hostname} has started.'.format(self))
-
-    def init_queues(self):
-        try:
-            self.app.select_queues(self.use_queues)
-        except KeyError as exc:
-            raise ImproperlyConfigured(
-                    UNKNOWN_QUEUE.format(self.use_queues, exc))
-        if self.app.conf.CELERY_WORKER_DIRECT:
-            self.app.amqp.queues.select_add(worker_direct(self.hostname))
 
     def redirect_stdouts_to_logger(self):
         self.app.log.setup(self.loglevel, self.logfile,
@@ -194,7 +132,7 @@ class Worker(configurated):
                 count, pluralize(count, 'message')))
 
     def tasklist(self, include_builtins=True):
-        tasks = self.app.tasks.keys()
+        tasks = self.app.tasks
         if not include_builtins:
             tasks = [t for t in tasks if not t.startswith('celery.')]
         return '\n'.join('  . {0}'.format(task) for task in sorted(tasks))
@@ -243,18 +181,6 @@ class Worker(configurated):
                 banner[i] = ' ' * 16 + banner[i]
         return '\n'.join(banner) + '\n'
 
-    def run_worker(self):
-        worker = self.WorkController(app=self.app,
-                    hostname=self.hostname,
-                    ready_callback=self.on_consumer_ready, beat=self.beat,
-                    autoscale=self.autoscale, autoreload=self.autoreload,
-                    no_execv=self.no_execv,
-                    pidfile=self.pidfile,
-                    **self.confopts_as_dict())
-        self.install_platform_tweaks(worker)
-        signals.worker_init.send(sender=worker)
-        worker.start()
-
     def install_platform_tweaks(self, worker):
         """Install platform specific tweaks and workarounds."""
         if self.app.IS_OSX:
@@ -291,8 +217,7 @@ def _shutdown_handler(worker, sig='TERM', how='Warm', exc=SystemExit,
         callback=None):
 
     def _handle_request(signum, frame):
-        set_in_sighandler(True)
-        try:
+        with in_sighandler():
             from celery.worker import state
             if current_process()._name == 'MainProcess':
                 if callback:
@@ -303,24 +228,33 @@ def _shutdown_handler(worker, sig='TERM', how='Warm', exc=SystemExit,
                                 'Cold': 'should_terminate'}[how], True)
             else:
                 raise exc()
-        finally:
-            set_in_sighandler(False)
     _handle_request.__name__ = 'worker_' + how
     platforms.signals[sig] = _handle_request
 install_worker_term_handler = partial(
     _shutdown_handler, sig='SIGTERM', how='Warm', exc=SystemExit,
 )
-install_worker_term_hard_handler = partial(
-    _shutdown_handler, sig='SIGQUIT', how='Cold', exc=SystemTerminate,
-)
+if not is_jython:
+    install_worker_term_hard_handler = partial(
+        _shutdown_handler, sig='SIGQUIT', how='Cold', exc=SystemTerminate,
+    )
+else:
+    install_worker_term_handler = lambda *a, **kw: None
 
 
 def on_SIGINT(worker):
     safe_say('celeryd: Hitting Ctrl+C again will terminate all running tasks!')
     install_worker_term_hard_handler(worker, sig='SIGINT')
-install_worker_int_handler = partial(
-    _shutdown_handler, sig='SIGINT', callback=on_SIGINT
-)
+if not is_jython:
+    install_worker_int_handler = partial(
+        _shutdown_handler, sig='SIGINT', callback=on_SIGINT
+    )
+else:
+    install_worker_int_handler = lambda *a, **kw: None
+
+
+def _clone_current_worker():
+    if os.fork() == 0:
+        os.execv(sys.executable, [sys.executable] + sys.argv)
 
 
 def install_worker_restart_handler(worker, sig='SIGHUP'):
@@ -329,9 +263,8 @@ def install_worker_restart_handler(worker, sig='SIGHUP'):
         """Signal handler restarting the current python program."""
         set_in_sighandler(True)
         safe_say('Restarting celeryd ({0})'.format(' '.join(sys.argv)))
-        pid = os.fork()
-        if pid == 0:
-            os.execv(sys.executable, [sys.executable] + sys.argv)
+        import atexit
+        atexit.register(_clone_current_worker)
         from celery.worker import state
         state.should_stop = True
     platforms.signals[sig] = restart_worker_sig_handler
@@ -339,18 +272,13 @@ def install_worker_restart_handler(worker, sig='SIGHUP'):
 
 def install_cry_handler():
     # Jython/PyPy does not have sys._current_frames
-    is_jython = sys.platform.startswith('java')
-    is_pypy = hasattr(sys, 'pypy_version_info')
     if is_jython or is_pypy:  # pragma: no cover
         return
 
     def cry_handler(signum, frame):
         """Signal handler logging the stacktrace of all active threads."""
-        set_in_sighandler(True)
-        try:
+        with in_sighandler():
             safe_say(cry())
-        finally:
-            set_in_sighandler(False)
     platforms.signals['SIGUSR1'] = cry_handler
 
 
@@ -359,12 +287,9 @@ def install_rdb_handler(envvar='CELERY_RDBSIG',
 
     def rdb_handler(signum, frame):
         """Signal handler setting a rdb breakpoint at the current frame."""
-        set_in_sighandler(True)
-        try:
+        with in_sighandler():
             from celery.contrib import rdb
             rdb.set_trace(frame)
-        finally:
-            set_in_sighandler(False)
     if os.environ.get(envvar):
         platforms.signals[sig] = rdb_handler
 
@@ -372,10 +297,7 @@ def install_rdb_handler(envvar='CELERY_RDBSIG',
 def install_HUP_not_supported_handler(worker, sig='SIGHUP'):
 
     def warn_on_HUP_handler(signum, frame):
-        set_in_sighandler(True)
-        try:
+        with in_sighandler():
             safe_say('{sig} not supported: Restarting with {sig} is '
                      'unstable on this platform!'.format(sig=sig))
-        finally:
-            set_in_sighandler(False)
     platforms.signals[sig] = warn_on_HUP_handler

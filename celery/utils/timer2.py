@@ -12,18 +12,17 @@ import atexit
 import heapq
 import os
 import sys
+import threading
 
 from functools import wraps
-from future_builtins import map
-from itertools import count
-from threading import Condition, Event, Lock, Thread
+from itertools import count, imap
 from time import time, sleep, mktime
 
 from datetime import datetime, timedelta
 from kombu.log import get_logger
 
 VERSION = (1, 0, 0)
-__version__ = '.'.join(map(str, VERSION))
+__version__ = '.'.join(imap(str, VERSION))
 __author__ = 'Ask Solem'
 __contact__ = 'ask@celeryproject.org'
 __homepage__ = 'http://github.com/ask/timer2/'
@@ -209,7 +208,7 @@ class Schedule(object):
         return [heapq.heappop(x) for x in [events] * len(events)]
 
 
-class Timer(Thread):
+class Timer(threading.Thread):
     Entry = Entry
     Schedule = Schedule
 
@@ -229,12 +228,11 @@ class Timer(Thread):
         self.schedule = schedule or self.Schedule(on_error=on_error,
                                                   max_interval=max_interval)
         self.on_tick = on_tick or self.on_tick
-
-        Thread.__init__(self)
-        self._is_shutdown = Event()
-        self._is_stopped = Event()
-        self.mutex = Lock()
-        self.not_empty = Condition(self.mutex)
+        threading.Thread.__init__(self)
+        self._is_shutdown = threading.Event()
+        self._is_stopped = threading.Event()
+        self.mutex = threading.Lock()
+        self.not_empty = threading.Condition(self.mutex)
         self.daemon = True
         self.name = 'Timer-{0}'.format(self._timer_count())
 

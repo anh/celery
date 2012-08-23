@@ -18,11 +18,10 @@ import signal as _signal
 import sys
 
 from contextlib import contextmanager
-from future_builtins import map
+from itertools import imap
 
 from .local import try_import
 
-from billiard import current_process
 from kombu.utils.limits import TokenBucket
 
 _setproctitle = try_import('setproctitle')
@@ -59,12 +58,35 @@ def pyimplementation():
     elif sys.platform.startswith('java'):
         return 'Jython ' + sys.platform
     elif hasattr(sys, 'pypy_version_info'):
-        v = '.'.join(map(str, sys.pypy_version_info[:3]))
+        v = '.'.join(imap(str, sys.pypy_version_info[:3]))
         if sys.pypy_version_info[3:]:
-            v += '-' + ''.join(map(str, sys.pypy_version_info[3:]))
+            v += '-' + ''.join(imap(str, sys.pypy_version_info[3:]))
         return 'PyPy ' + v
     else:
         return 'CPython'
+
+
+def _find_option_with_arg(argv, short_opts=None, long_opts=None):
+    for i, arg in enumerate(argv):
+        if arg.startswith('-'):
+            if long_opts and arg.startswith('--'):
+                name, _, val = arg.partition('=')
+                if name in long_opts:
+                    return val
+            if short_opts and arg in short_opts:
+                return argv[i + 1]
+    raise KeyError('|'.join(short_opts or [] + long_opts or []))
+
+
+def maybe_patch_concurrency(argv, short_opts=None, long_opts=None):
+    try:
+        pool = _find_option_with_arg(argv, short_opts, long_opts)
+    except KeyError:
+        pass
+    else:
+        # set up eventlet/gevent environments ASAP.
+        from celery import concurrency
+        concurrency.get_implementation(pool)
 
 
 class LockFailed(Exception):
@@ -218,11 +240,16 @@ def create_pidlock(pidfile):
         pidlock = create_pidlock('/var/run/app.pid')
 
     """
+    pidlock = _create_pidlock(pidfile)
+    atexit.register(pidlock.release)
+    return pidlock
+
+
+def _create_pidlock(pidfile):
     pidlock = PIDFile(pidfile)
     if pidlock.is_locked() and not pidlock.remove_if_stale():
         raise SystemExit(PIDLOCKED.format(pidfile, pidlock.read_pid()))
     pidlock.acquire()
-    atexit.register(pidlock.release)
     return pidlock
 
 
@@ -245,7 +272,9 @@ class DaemonContext(object):
             os.chdir(self.workdir)
             os.umask(self.umask)
 
-            os.closerange(1, get_fdmax(default=2048))
+            for fd in reversed(range(get_fdmax(default=2048))):
+                with ignore_EBADF():
+                    os.close(fd)
             os.open(DAEMON_REDIRECT_TO, os.O_RDWR)
             os.dup2(0, 1)
             os.dup2(0, 2)
@@ -298,8 +327,7 @@ def detached(logfile=None, pidfile=None, uid=None, gid=None, umask=0,
             # Now in detached child process with effective user set to nobody,
             # and we know that our logfile can be written to, and that
             # the pidfile is not locked.
-            pidlock = create_pidlock('/var/run/app.pid').acquire()
-            atexit.register(pidlock.release)
+            pidlock = create_pidlock('/var/run/app.pid')
 
             # Run the program
             program.run(logfile='/var/log/app.log')
@@ -319,7 +347,8 @@ def detached(logfile=None, pidfile=None, uid=None, gid=None, umask=0,
     # we need to know that we have access to the logfile.
     logfile and open(logfile, 'a').close()
     # Doesn't actually create the pidfile, but makes sure it's not stale.
-    pidfile and create_pidlock(pidfile)
+    if pidfile:
+        _create_pidlock(pidfile).release()
 
     return DaemonContext(umask=umask, workdir=workdir, fake=fake)
 
@@ -591,6 +620,7 @@ else:
 
         """
         if not rate_limit or _setps_bucket.can_consume(1):
+            from billiard import current_process
             if hostname:
                 progname = '{0}@{1}'.format(progname, hostname.split('.')[0])
             return set_process_title(
